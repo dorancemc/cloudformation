@@ -1,0 +1,424 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack for ADManagement, SubordinateCA and RootCA.
+##########################################################################
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Network Configuration"
+        Parameters:
+          - VPCID
+          - SubnetId
+      -
+        Label:
+          default: "Amazon EC2 Configuration"
+        Parameters:
+          - ADManagementInstanceType
+          - ADManagementHostname
+          - SubordinateCAInstanceType
+          - SubordinateCAHostname
+          - RootCAInstanceType
+          - RootCAHostname
+          - LocalAdminPasswd
+      -
+        Label:
+          default: "Management"
+        Parameters:
+          - EC2Keypair
+          - RDPSrcIP
+          - ADManagementSubnet
+      -
+        Label:
+          default: "ActiveDirectory"
+        Parameters:
+          - ADDirectoryName
+          - DAAdminPassword
+          - CAAdminPassword
+          - ADSecurityGroup
+
+##########################################################################
+Parameters:
+## Network Configuration
+  VPCID:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to place instance in
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet to place instance in
+## Amazon EC2 Configuration
+  ADManagementInstanceType:
+    Description: Amazon EC2 instance type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+      - t2.small
+      - t2.medium
+  SubordinateCAInstanceType:
+    Description: SubordinateCA Instance Type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+      - t2.small
+      - t2.medium
+    ConstraintDescription: Must be a valid EC2 instance type.
+  RootCAInstanceType:
+    Description: RootCA Instance Type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+      - t2.small
+      - t2.medium
+    ConstraintDescription: Must be a valid EC2 instance type.
+  ADManagementHostname:
+    Description: 'AD Management Hostname'
+    Type: String
+    MinLength: '1'
+    MaxLength: '32'
+    Default: admanagement
+  SubordinateCAHostname:
+    Description: 'SubordinateCA Hostname'
+    Type: String
+    MinLength: '1'
+    MaxLength: '32'
+    Default: subordinateca
+  RootCAHostname:
+    Description: 'RootCA Hostname'
+    Type: String
+    MinLength: '1'
+    MaxLength: '32'
+    Default: rootca
+  LocalAdminPasswd:
+    Description: 'Local Admin Password'
+    Type: String
+    MinLength: '8'
+    MaxLength: '32'
+    NoEcho: 'True'
+    Default: 'L0c4lAdm!n'
+## Management
+  EC2Keypair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: KeyPair for EC2 Instance
+  RDPSrcIP:
+    Description: "IP or Subnet Allowed to Access VIA RDP"
+    Type: String
+    Default: "0.0.0.0/0"
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: '^([0-9]+\.){3}[0-9]+\/[0-9]+$'
+  ADManagementSubnet:
+    Description: 'EC2 Instances Subnet'
+    Type: String
+    Default: "172.31.0.0/16"
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: '^([0-9]+\.){3}[0-9]+\/[0-9]+$'
+## ActiveDirectory Parameters
+  DAAdminPassword:
+    Description: 'Active Directory Admin Password'
+    Type: String
+    MinLength: '8'
+    MaxLength: '32'
+    NoEcho: 'True'
+    Default: 'ADAdm!nP@ss'
+  CAAdminPassword:
+    Description: 'CAAdmin User Password'
+    Type: String
+    MinLength: '8'
+    MaxLength: '32'
+    NoEcho: 'True'
+    Default: 'C4$dm!nPass'
+  ADDirectoryName:
+    Type: String
+    Description: Active Directory Name. Eg. my.ad.local
+  ADSecurityGroup:
+    Type: String
+    Description: Active Directory Security Group. Eg. sg-a123456z
+##########################################################################
+Mappings:
+  AWSRegion2AMI:
+    us-east-1:
+      Windows2016: ami-ed14c790
+    us-east-2:
+      Windows2016: ami-5984b43c
+    us-west-1:
+      Windows2016: ami-3dd1c25d
+    us-west-2:
+      Windows2016: ami-f3dcbc8b
+##########################################################################
+
+Resources:
+
+  ADMngtSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'AD Management Security Group'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '3389'
+          ToPort: '3389'
+          CidrIp: !Ref RDPSrcIP
+        - IpProtocol: -1
+          FromPort: '0'
+          ToPort: '65535'
+          CidrIp: !Ref ADManagementSubnet
+        - IpProtocol: -1
+          FromPort: '0'
+          ToPort: '65535'
+          SourceSecurityGroupId: !Ref ADSecurityGroup
+      Tags:
+        - Key: Name
+          Value: ADMgntInbound
+      VpcId: !Ref VPCID
+
+  ADEgressSecurityGroup:
+    Type: "AWS::EC2::SecurityGroupEgress"
+    Properties:
+      Description: "Allow connections to ADManagement Stack"
+      GroupId: !Ref ADSecurityGroup
+      IpProtocol: -1
+      FromPort: '0'
+      ToPort: '65535'
+      DestinationSecurityGroupId:  !GetAtt ADMngtSecurityGroup.GroupId
+    DependsOn: ADMngtSecurityGroup
+
+  RootCAInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref EC2Keypair
+      ImageId: !FindInMap
+        - AWSRegion2AMI
+        - !Ref 'AWS::Region'
+        - Windows2016
+      InstanceType: !Ref RootCAInstanceType
+      SubnetId: !Ref SubnetId
+      Tags:
+        - Key: Name
+          Value: !Ref RootCAHostname
+      SecurityGroupIds:
+        - !Ref ADMngtSecurityGroup
+      UserData:
+        Fn::Base64:
+          !Join
+            - "\n"
+            - - "<powershell>"
+              - "#Initial Configuration"
+              - Set-TimeZone -Name "SA Pacific Standard Time"
+              - Add-Content -value ("cfn config") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - "#Disable Firewall"
+              - Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+              - "#Install Windows Features"
+              - Install-WindowsFeature adcs-cert-authority -IncludeAllSubFeature
+              - Install-WindowsFeature RSAT-ADCS,RSAT-ADCS-mgmt
+              - "#Create Local Admin User and folders"
+              - Fn::Join: [ '', [ 'New-LocalUser -Name Admin -Password (ConvertTo-SecureString ', !Ref 'LocalAdminPasswd', ' -AsPlainText -Force) ' ] ]
+              - Add-LocalGroupMember -Group Administrators -Member Admin
+              - New-Item C:\rootcerts\ -type directory
+              - New-Item C:\scripts\ -type directory
+              - New-SmbShare -Name rootcerts -Path C:\rootcerts\ -FullAccess Admin
+              - $scriptlocation = "C:\scripts\rootca_initconfig.ps1"
+              - "#Script to RootCA Promotion"
+              - 'Add-Content -path $scriptlocation @"'
+              - Add-Content -value ("rootca config") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - Install-AdcsCertificationAuthority -CAType StandaloneRootCa -ValidityPeriod Years -ValidityPeriodUnits 10 -Force
+              - 'copy C:\Windows\system32\certsrv\certenroll\*.cr* C:\rootcerts\'
+              - start-sleep -s 30
+              - Disable-ScheduledTask -TaskName "HeadlessRestartTask"
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - '"@'
+              - schtasks.exe /create /f /tn HeadlessRestartTask /ru SYSTEM /sc ONSTART /tr "powershell.exe -file $scriptlocation"
+              - "#Script to publish the subordinateCA request"
+              - $scriptlocation = "C:\scripts\subordinateca_request.ps1"
+              - 'Add-Content -path $scriptlocation @"'
+              - Fn::Join: [ '', [ 'certreq -submit C:\rootcerts\', !Ref 'SubordinateCAHostname', '.req' ] ]
+              - Write-Host "
+              - Navigate to Server Manager > Tools > Certification Authority on RootCA.
+              - In the Certification Authority window, expand the ROOTCA tree in the left pane and choose Pending Requests.
+              - In the right pane, note the value in the Request ID column. Right-click the request and choose All Tasks > Issue.
+              - . "
+              - 'Read-Host "After approve/issued the certificate, press enter to export it" | Out-Null'
+              - Fn::Join: [ '', [ 'certreq –retrieve 2 C:\rootcerts\', !Ref 'SubordinateCAHostname', '.crt' ] ]
+              - '"@'
+              - "#Rename the RootCA Host and restart"
+              - Fn::Join: [ '', [ "Rename-Computer -NewName ", !Ref 'RootCAHostname', "  -Restart \n" ] ]
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - "</powershell>"
+    DependsOn: ADMngtSecurityGroup
+
+  ADManagementInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref EC2Keypair
+      ImageId: !FindInMap
+        - AWSRegion2AMI
+        - !Ref 'AWS::Region'
+        - Windows2016
+      InstanceType: !Ref ADManagementInstanceType
+      SubnetId: !Ref SubnetId
+      Tags:
+        - Key: Name
+          Value: !Ref ADManagementHostname
+      SecurityGroupIds:
+        - !Ref ADMngtSecurityGroup
+      UserData:
+        Fn::Base64:
+          !Join
+            - "\n"
+            - - "<powershell>"
+              - "#Initial Configuration"
+              - Start-Sleep -s 600
+              - Set-TimeZone -Name "SA Pacific Standard Time"
+              - Add-Content -value ("cfn config") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - "#Disable Firewall"
+              - Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+              - Set-ExecutionPolicy Unrestricted -force
+              - "#Install Windows Features"
+              - Install-WindowsFeature rsat-adds -IncludeAllSubFeature
+              - New-Item c:\scripts -type directory
+              - "#Script for MSAD ports validation"
+              - Invoke-WebRequest https://docs.aws.amazon.com/directoryservice/latest/admin-guide/samples/DirectoryServicePortTest.zip  -OutFile c:\scripts\directoryserviceporttest.zip
+              - Expand-Archive -Path c:\scripts\directoryserviceporttest.zip -DestinationPath C:\scripts\directoryserviceporttest\
+              - Fn::Join: [ '', [ '$ADDirectoryName="', !Ref 'ADDirectoryName', '"' ] ]
+              - $ipAD = [System.Net.Dns]::GetHostAddresses("$ADDirectoryName")[0].IPAddressToString;
+              - 'Add-Content -path c:\scripts\directoryserviceporttest.ps1 @"'
+              - c:\scripts\directoryserviceporttest\DirectoryServicePortTest.exe -d $ADDirectoryName -ip $ipAD -tcp "53,88,135,389,636,445,3268,5722,9389" -udp "53,88,123,138,389,445"
+              - '"@'
+              - "#Script for caadmin user creation"
+              - Fn::Join: [ '', [ 'New-LocalUser -Name Admin -Password (ConvertTo-SecureString ', !Ref 'LocalAdminPasswd', ' -AsPlainText -Force) ' ] ]
+              - Add-LocalGroupMember -Group Administrators -Member Admin
+              - $scriptlocation = "c:\scripts\caadmin_usercreation.ps1"
+              - 'Add-Content -path $scriptlocation @"'
+              - Add-Content -value ("caadmin user config") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - Fn::Join: [ '', [ '`$domain = "', !Ref 'ADDirectoryName', '"'] ]
+              - Fn::Join: [ '', [ '`$password = "', !Ref 'DAAdminPassword', '" | ConvertTo-SecureString -asPlainText -Force'] ]
+              - '`$username = "`$domain\Admin"'
+              - '`$credential = New-Object System.Management.Automation.PSCredential(`$username,`$password)'
+              - Fn::Join: [ '', [ 'New-ADUser -Name "CA Admin" -GivenName CA -Surname Admin -SamAccountName caadmin -UserPrincipalName caadmin -AccountPassword (ConvertTo-SecureString "', !Ref 'CAAdminPassword', '" -AsPlainText -Force)  -Enabled 1 -credential `$credential' ] ]
+              - 'Add-ADGroupMember -Identity "AWS Delegated Enterprise Certificate Authority Administrators" -Members "caadmin" -credential `$credential'
+              - 'Add-ADGroupMember -Identity "AWS Delegated Server Administrators" -Members "caadmin" -credential `$credential'
+              - "#Install rootca certificates"
+              - Add-Content -value ("import rootca certs") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - Fn::Join: [ '', [ 'net use y: \\', !GetAtt RootCAInstance.PrivateIp ,'\rootcerts "', !Ref 'LocalAdminPasswd', '" /user:admin '] ]
+              - Fn::Join: [ '', [ 'certutil -addstore -f root y:\', !Ref 'RootCAHostname' ,'_', !Ref 'RootCAHostname', '-CA.crt'] ]
+              - Fn::Join: [ '', [ 'certutil -addstore -f root  y:\', !Ref 'RootCAHostname' ,'-CA.crl'] ]
+              - Fn::Join: [ '', [ 'certutil -dspublish -f y:\', !Ref 'RootCAHostname' ,'_', !Ref 'RootCAHostname', '-CA.crt'] ]
+              - 'net use y: /delete'
+              - start-sleep -s 30
+              - Disable-ScheduledTask -TaskName "HeadlessRestartTask"
+              - '"@'
+              - schtasks.exe /create /f /tn HeadlessRestartTask /ru SYSTEM /sc ONSTART /tr "powershell.exe -file $scriptlocation"
+              - "#Rename the host, bind to ActiveDirectory and restart"
+              - Fn::Join: [ '', [ '$domain = "', !Ref 'ADDirectoryName', '"'] ]
+              - Fn::Join: [ '', [ '$password = "', !Ref 'DAAdminPassword', '" | ConvertTo-SecureString -asPlainText -Force'] ]
+              - $username = "$domain\Admin"
+              - $credential = New-Object System.Management.Automation.PSCredential($username,$password)
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - Fn::Join: [ '', [ 'Add-Computer -DomainName $domain -ComputerName $env:COMPUTERNAME -NewName ', !Ref 'ADManagementHostname' ,' -Credential $credential -Force -Restart' ] ]
+              - "</powershell>"
+    DependsOn: RootCAInstance
+
+  SubordinateCAInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref EC2Keypair
+      ImageId: !FindInMap
+        - AWSRegion2AMI
+        - !Ref 'AWS::Region'
+        - Windows2016
+      InstanceType: !Ref SubordinateCAInstanceType
+      SubnetId: !Ref SubnetId
+      Tags:
+        - Key: Name
+          Value: !Ref SubordinateCAHostname
+      SecurityGroupIds:
+        - !Ref ADMngtSecurityGroup
+      UserData:
+        Fn::Base64:
+          !Join
+            - "\n"
+            - - "<powershell>"
+              - "#Initial Configuration"
+              - Start-Sleep -s 1200
+              - Set-TimeZone -Name "SA Pacific Standard Time"
+              - Add-Content -value ("cfn config") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - "#Disable Firewall"
+              - Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+              - Set-ExecutionPolicy Unrestricted -force
+              - "#Install Windows Features"
+              - Install-WindowsFeature adcs-cert-authority -IncludeAllSubFeature
+              - Install-WindowsFeature RSAT-ADCS,RSAT-ADCS-mgmt
+              - "#Script to copy rootca certificates, promote the subordinateCA and generate the cetificate request "
+              - New-Item C:\rootcerts\ -type directory
+              - New-Item C:\scripts\ -type directory
+              - $scriptlocation = "c:\scripts\subordinateca_request.ps1"
+              - 'Add-Content -path $scriptlocation @"'
+              - Add-Content -value ("subordinateca config") -path c:\cfn.log
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - Fn::Join: [ '', [ 'net use y: \\', !GetAtt RootCAInstance.PrivateIp ,'\rootcerts "', !Ref 'LocalAdminPasswd', '" /user:admin '] ]
+              - Fn::Join: [ '', [ 'certutil -addstore -f root y:\', !Ref 'RootCAHostname' ,'_', !Ref 'RootCAHostname', '-CA.crt'] ]
+              - Fn::Join: [ '', [ 'certutil -addstore -f root  y:\', !Ref 'RootCAHostname' ,'-CA.crl'] ]
+              - Fn::Join: [ '', [ 'certutil -dspublish -f y:\', !Ref 'RootCAHostname' ,'_', !Ref 'RootCAHostname', '-CA.crt'] ]
+              - Fn::Join: [ '', [ '`$domain = "', !Ref 'ADDirectoryName', '"'] ]
+              - Fn::Join: [ '', [ '`$password = "', !Ref 'CAAdminPassword', '" | ConvertTo-SecureString -asPlainText -Force'] ]
+              - '`$username = "`$domain\caadmin"'
+              - '`$credential = New-Object System.Management.Automation.PSCredential(`$username,`$password)'
+              - 'Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCa -Force -credential `$credential'
+              - Fn::Join: [ '', [ 'copy c:\*.req y:\', !Ref 'SubordinateCAHostname', '.req'] ]
+              - 'net use y: /delete'
+              - start-sleep -s 30
+              - Disable-ScheduledTask -TaskName "HeadlessRestartTask"
+              - '"@'
+              - schtasks.exe /create /f /tn HeadlessRestartTask /ru SYSTEM /sc ONSTART /tr "powershell.exe -file $scriptlocation"
+              - "#Script to finish the Configuration for subordinateCA "
+              - $scriptlocation = "c:\scripts\subordinateca_configure.ps1"
+              - 'Add-Content -path $scriptlocation @"'
+              - Fn::Join: [ '', [ 'net use y: \\', !GetAtt RootCAInstance.PrivateIp ,'\rootcerts "', !Ref 'LocalAdminPasswd', '" /user:admin '] ]
+              - Fn::Join: [ '', [ 'copy y:\', !Ref 'SubordinateCAHostname', '.crt c:\rootcerts'] ]
+              - Fn::Join: [ '', [ 'certutil.exe -installcert c:\rootcerts\', !Ref 'SubordinateCAHostname', '.crt'] ]
+              - start-service certsvc
+              - 'net use y: /delete'
+              - '"@'
+              - "#Rename the host, bind to ActiveDirectory and restart"
+              - Fn::Join: [ '', [ '$domain = "', !Ref 'ADDirectoryName', '"'] ]
+              - Fn::Join: [ '', [ '$password = "', !Ref 'DAAdminPassword', '" | ConvertTo-SecureString -asPlainText -Force'] ]
+              - $username = "$domain\Admin"
+              - $credential = New-Object System.Management.Automation.PSCredential($username,$password)
+              - Add-Content -value (Get-Date) -path c:\cfn.log
+              - Fn::Join: [ '', [ 'Add-Computer -DomainName $domain -ComputerName $env:COMPUTERNAME -NewName ', !Ref 'SubordinateCAHostname' ,' -Credential $credential -Force -Restart' ] ]
+              - "</powershell>"
+    DependsOn: ADManagementInstance
+
+##########################################################################
+Outputs:
+  ADManagementInstance:
+    Description: ADManagement Instance IP (private/public)
+    Value: !Join [ '', [ !GetAtt ADManagementInstance.PrivateIp, "/", !GetAtt ADManagementInstance.PublicIp ] ]
+  SubordinateCAInstance:
+    Description: SubordinateCA Instance IP (private/public)
+    Value: !Join [ '', [ !GetAtt SubordinateCAInstance.PrivateIp, "/", !GetAtt SubordinateCAInstance.PublicIp ] ]
+  RootCAInstance:
+    Description: RootCA Instance IP (private/public)
+    Value: !Join [ '', [ !GetAtt RootCAInstance.PrivateIp, "/", !GetAtt RootCAInstance.PublicIp ] ]
+  Step1AfterInstall:
+    Value: 'Wait 30 minutes after finish de stack deploy'
+  Step2AfterInstall:
+    Value: 'Logon on RootCAInstance with local admin account and check the file c:\rootcerts\subordinateca1.req exist'
+  Step3AfterInstall:
+    Value: 'Logon on RootCAInstance with local admin account and run C:\scripts\subordinateca_request.ps1 command'
+  Step4AfterInstall:
+    Value: 'Logon on SubordinateCAInstance with caadmin account and run C:\scripts\subordinateca_configure.ps1 command with elevated privileges'
+  Step5AfterInstall:
+    Value: 'follow the instructions on step 3: https://aws.amazon.com/blogs/security/how-to-enable-ldaps-for-your-aws-microsoft-ad-directory/'
